@@ -1,6 +1,7 @@
 import os
 import logging
 import threading
+import asyncio
 from flask import Flask, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler, PreCheckoutQueryHandler
@@ -32,7 +33,7 @@ async def get_telegram_file_url(file_id: str):
         return f"https://api.telegram.org/file/bot{BOT_TOKEN}/{data['result']['file_path']}"
 
 async def start(update: Update, context):
-    await update.message.reply_text("Привет! Отправь мне фото.")
+    await update.message.reply_text("Привет! Отправь мне фото, я улучшу его.\nБесплатно scale 2 или за 50 Stars scale 4.")
 
 async def handle_photo(update: Update, context):
     logging.info("Получено фото")
@@ -60,9 +61,9 @@ async def button_callback(update: Update, context):
         result = await enhance_image(file_url, scale=2)
         if result:
             await context.bot.send_photo(chat_id=update.effective_chat.id, photo=result)
-            await query.edit_message_text("Готово!")
+            await query.edit_message_text("Готово! Бесплатная версия.")
         else:
-            await query.edit_message_text("Ошибка улучшения.")
+            await query.edit_message_text("Ошибка улучшения. Попробуй позже.")
     elif query.data == "supreme":
         context.user_data['supreme_file_id'] = file_id
         await context.bot.send_invoice(
@@ -86,7 +87,7 @@ async def successful_payment(update: Update, context):
     if not file_id:
         await update.message.reply_text("Ошибка: фото не найдено.")
         return
-    await update.message.reply_text("✅ Оплачено! Улучшаю...")
+    await update.message.reply_text("✅ Оплачено! Улучшаю Supreme...")
     save_payment(update.effective_user.id, 50, 'completed', file_id)
     file_url = await get_telegram_file_url(file_id)
     if not file_url:
@@ -95,19 +96,30 @@ async def successful_payment(update: Update, context):
     result = await enhance_image(file_url, scale=4)
     if result:
         await context.bot.send_photo(chat_id=update.effective_chat.id, photo=result)
-        await update.message.reply_text("Готово! Фото улучшено.")
+        await update.message.reply_text("Готово! Улучшенное фото Supreme.")
     else:
-        await update.message.reply_text("Ошибка улучшения.")
+        await update.message.reply_text("Ошибка улучшения. Попробуй позже.")
 
-# ---------- ЗАПУСК БОТА В ОТДЕЛЬНОМ ПОТОКЕ ----------
+# ---------- ЗАПУСК БОТА В ОТДЕЛЬНОМ ПОТОКЕ С СОБСТВЕННЫМ EVENT LOOP ----------
 def run_bot():
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(CallbackQueryHandler(button_callback))
-    app.add_handler(PreCheckoutQueryHandler(pre_checkout))
-    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
-    app.run_polling()
+    # Создаём новый event loop для этого потока
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    application = Application.builder().token(BOT_TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    application.add_handler(CallbackQueryHandler(button_callback))
+    application.add_handler(PreCheckoutQueryHandler(pre_checkout))
+    application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
+    
+    # Запускаем поллинг с loop
+    loop.run_until_complete(application.initialize())
+    loop.run_until_complete(application.start())
+    try:
+        loop.run_forever()
+    finally:
+        loop.close()
 
 # ---------- FLASK ДЛЯ HEALTH CHECK ----------
 flask_app = Flask(__name__)
