@@ -1,128 +1,121 @@
+# bot.py
 import os
 import logging
+import asyncio
 import httpx
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler, ContextTypes
-import stripe
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler, PreCheckoutQueryHandler
+from db import init_db, save_payment
 from enhance import enhance_image
-from db import init_db, add_payment
 
 load_dotenv()
+logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
-stripe.api_key = STRIPE_SECRET_KEY
+REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
+if not BOT_TOKEN or not REPLICATE_API_TOKEN:
+    raise ValueError("Missing BOT_TOKEN or REPLICATE_API_TOKEN in .env")
 
-logging.basicConfig(level=logging.INFO)
 init_db()
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def get_telegram_file_url(file_id: str):
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/getFile",
+            json={"file_id": file_id}
+        )
+        data = resp.json()
+        if not data.get("ok"):
+            logging.error(f"Telegram API error: {data}")
+            return None
+        return f"https://api.telegram.org/file/bot{BOT_TOKEN}/{data['result']['file_path']}"
+
+async def start(update: Update, context):
     await update.message.reply_text(
-        "Привет! Я бот для улучшения фото.\n"
-        "Отправь мне фото, и я предложу бесплатное улучшение или платное Supreme (высокое разрешение).\n"
-        "Платное улучшение стоит $1 (тестовый режим)."
+        "Привет! Отправь фото, я улучшу его.\n"
+        "🆓 Бесплатно (scale 2)\n"
+        "⭐ Supreme за 50 Telegram Stars (scale 4)"
     )
 
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_photo(update: Update, context):
     photo = update.message.photo[-1]
-    file_id = photo.file_id
-    context.user_data['last_photo'] = file_id
-
+    context.user_data['last_photo'] = photo.file_id
     keyboard = [
-        [InlineKeyboardButton("🆓 Бесплатное улучшение", callback_data="free_enhance")],
-        [InlineKeyboardButton("💎 Supreme улучшение (платно)", callback_data="supreme_enhance")]
+        [InlineKeyboardButton("🆓 Бесплатно", callback_data="free")],
+        [InlineKeyboardButton("⭐ Supreme за 50 Stars", callback_data="supreme")]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Выбери вариант улучшения:", reply_markup=reply_markup)
+    await update.message.reply_text(
+        "Выбери вариант:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
-async def get_telegram_file_url(file_id: str, bot_token: str) -> str:
-    """Получает прямую ссылку на файл Telegram через API."""
-    async with httpx.AsyncClient() as client:
-        try:
-            resp = await client.post(
-                f"https://api.telegram.org/bot{bot_token}/getFile",
-                json={"file_id": file_id}
-            )
-            data = resp.json()
-            if not data.get("ok"):
-                logging.error(f"Telegram API error: {data}")
-                return None
-            file_path = data["result"]["file_path"]
-            file_url = f"https://api.telegram.org/file/bot{bot_token}/{file_path}"
-            logging.info(f"Generated file URL: {file_url}")
-            return file_url
-        except Exception as e:
-            logging.error(f"Error getting file URL: {e}")
-            return None
-
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def button_callback(update: Update, context):
     query = update.callback_query
     await query.answer()
+    file_id = context.user_data.get('last_photo')
+    if not file_id:
+        await query.edit_message_text("Сначала отправь фото.")
+        return
 
-    if query.data == "free_enhance":
-        file_id = context.user_data.get('last_photo')
-        if not file_id:
-            await query.edit_message_text("Сначала отправьте фото.")
-            return
-        await query.edit_message_text("🔄 Улучшаю фото (бесплатно)...")
-        file_url = await get_telegram_file_url(file_id, BOT_TOKEN)
+    if query.data == "free":
+        await query.edit_message_text("🔄 Улучшаю бесплатно...")
+        file_url = await get_telegram_file_url(file_id)
         if not file_url:
-            await query.edit_message_text("Не удалось получить фото. Попробуйте еще раз.")
+            await query.edit_message_text("Ошибка получения файла.")
             return
-        result_url = await enhance_image(file_url, scale=2)
-        if result_url:
-            await context.bot.send_photo(chat_id=update.effective_chat.id, photo=result_url)
-            await query.edit_message_text("Вот ваше улучшенное фото (бесплатная версия).")
+        result = await enhance_image(file_url, scale=2)
+        if result:
+            await context.bot.send_photo(chat_id=update.effective_chat.id, photo=result)
+            await query.edit_message_text("Готово! Бесплатная версия.")
         else:
-            await query.edit_message_text("Ошибка при улучшении. Попробуйте позже.")
+            await query.edit_message_text("Ошибка улучшения. Попробуй позже.")
 
-    elif query.data == "supreme_enhance":
-        file_id = context.user_data.get('last_photo')
-        if not file_id:
-            await query.edit_message_text("Сначала отправьте фото.")
-            return
-        try:
-            session = stripe.checkout.Session.create(
-                payment_method_types=['card'],
-                line_items=[{
-                    'price_data': {
-                        'currency': 'usd',
-                        'product_data': {
-                            'name': 'Supreme улучшение фото',
-                            'description': 'Высокое разрешение (scale=4)',
-                        },
-                        'unit_amount': 100,
-                    },
-                    'quantity': 1,
-                }],
-                mode='payment',
-                success_url='https://example.com/success',
-                cancel_url='https://example.com/cancel',
-                metadata={
-                    'user_id': update.effective_user.id,
-                    'file_id': file_id
-                }
-            )
-            add_payment(session.id, update.effective_user.id, file_id, 'pending')
-            keyboard = [[InlineKeyboardButton("💳 Оплатить $1", url=session.url)]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(
-                "Для улучшения Supreme необходимо оплатить $1.\n"
-                "После оплаты вы получите улучшенное фото в этом чате.\n"
-                "Нажмите кнопку ниже для оплаты:",
-                reply_markup=reply_markup
-            )
-        except Exception as e:
-            logging.error(f"Stripe error: {e}")
-            await query.edit_message_text("Ошибка при создании платежной сессии. Попробуйте позже.")
+    elif query.data == "supreme":
+        context.user_data['supreme_file_id'] = file_id
+        await context.bot.send_invoice(
+            chat_id=update.effective_chat.id,
+            title="Supreme улучшение",
+            description="Высокое разрешение (scale 4)",
+            payload="supreme_upgrade",
+            provider_token="",
+            currency="XTR",
+            prices=[LabeledPrice("⭐ Улучшение", 50)],
+            start_parameter="supreme"
+        )
+
+async def pre_checkout(update: Update, context):
+    query = update.pre_checkout_query
+    await query.answer(ok=True)
+    file_id = context.user_data.get('supreme_file_id', '')
+    save_payment(update.effective_user.id, 50, 'pending', file_id)
+
+async def successful_payment(update: Update, context):
+    file_id = context.user_data.get('supreme_file_id')
+    if not file_id:
+        await update.message.reply_text("Ошибка: фото не найдено.")
+        return
+    await update.message.reply_text("✅ Оплачено! Улучшаю Supreme...")
+    save_payment(update.effective_user.id, 50, 'completed', file_id)
+    file_url = await get_telegram_file_url(file_id)
+    if not file_url:
+        await update.message.reply_text("Не удалось получить фото.")
+        return
+    result = await enhance_image(file_url, scale=4)
+    if result:
+        await context.bot.send_photo(chat_id=update.effective_chat.id, photo=result)
+        await update.message.reply_text("Готово! Твоё улучшенное фото.")
+    else:
+        await update.message.reply_text("Ошибка улучшения. Попробуй позже.")
 
 def main():
-    application = Application.builder().token(BOT_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    application.add_handler(CallbackQueryHandler(button_callback))
-    application.run_polling()
+    app = Application.builder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(CallbackQueryHandler(button_callback))
+    app.add_handler(PreCheckoutQueryHandler(pre_checkout))
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
