@@ -33,7 +33,7 @@ async def get_telegram_file_url(file_id: str):
 
 async def start(update: Update, context):
     logger.info("Command /start received")
-    await update.message.reply_text("Привет! Отправь фото, я его улучшу.\n🆓 Бесплатно\n⭐ Supreme за 50 Stars")
+    await update.message.reply_text("Привет! Отправь фото, я его улучшу.\n🆓 Бесплатно\n⭐ Supreme за 1 Star")
 
 async def handle_photo(update: Update, context):
     logger.info("Photo received")
@@ -41,7 +41,7 @@ async def handle_photo(update: Update, context):
     context.user_data['last_photo'] = photo.file_id
     keyboard = [
         [InlineKeyboardButton("🆓 Бесплатно", callback_data="free")],
-        [InlineKeyboardButton("⭐ Supreme за 50 Stars", callback_data="supreme")]
+        [InlineKeyboardButton("⭐ Supreme за 1 Stars", callback_data="supreme")]
     ]
     await update.message.reply_text("Выбери вариант:", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -74,7 +74,7 @@ async def button_callback(update: Update, context):
             payload="supreme_upgrade",
             provider_token="",
             currency="XTR",
-            prices=[LabeledPrice("⭐ Улучшение", 50)],
+            prices=[LabeledPrice("⭐ Улучшение", 1)],
             start_parameter="supreme"
         )
 
@@ -82,7 +82,7 @@ async def pre_checkout(update: Update, context):
     await update.pre_checkout_query.answer(ok=True)
     logger.info(f"Pre-checkout for user {update.effective_user.id}")
     file_id = context.user_data.get('supreme_file_id', '')
-    save_payment(update.effective_user.id, 50, 'pending', file_id)
+    save_payment(update.effective_user.id, 1, 'pending', file_id)
 
 async def successful_payment(update: Update, context):
     logger.info("Successful payment")
@@ -91,7 +91,7 @@ async def successful_payment(update: Update, context):
         await update.message.reply_text("Ошибка: фото не найдено.")
         return
     await update.message.reply_text("✅ Оплачено! Улучшаю Supreme...")
-    save_payment(update.effective_user.id, 50, 'completed', file_id)
+    save_payment(update.effective_user.id, 1, 'completed', file_id)
     file_url = await get_telegram_file_url(file_id)
     if not file_url:
         await update.message.reply_text("Не удалось получить фото.")
