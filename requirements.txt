@@ -2,3 +2,4 @@ python-telegram-bot>=20.7
 replicate>=0.24.0
 python-dotenv>=1.0.0
 httpx>=0.25.2
+Flask>=2.0.0
